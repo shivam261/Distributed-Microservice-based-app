@@ -7,7 +7,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.Authentication;
 import java.util.List;
 
 @RestController
@@ -24,13 +25,17 @@ public class UserController {
 
     @PostMapping
     public ResponseEntity<User> createUser(@RequestBody User user){
-        User u = userService.saveUser(user);
+        User u = userService.createUser(user);
         return new  ResponseEntity<>(u, HttpStatus.CREATED);
     }
 
-    @DeleteMapping("id/{id}")
-    public ResponseEntity<?> deleteUser(@PathVariable ObjectId id){
-        userService.deleteUser(id);
+    @DeleteMapping("id")
+    public ResponseEntity<?> deleteUser(){
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        assert authentication != null;
+        String username = authentication.getName();
+
+        userService.deleteUser(username);
         return new ResponseEntity<>(HttpStatus.NO_CONTENT);
     }
 

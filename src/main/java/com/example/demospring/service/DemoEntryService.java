@@ -31,7 +31,7 @@ public class DemoEntryService
         if(user.isPresent()){
             DemoEntry demoentry = demoEntryRepository.save(demoEntry);
             user.get().getDemoEntries().add(demoentry);
-            userService.saveUser(user.get());
+            userService.createUser(user.get());
             return true;
         }
         return false;

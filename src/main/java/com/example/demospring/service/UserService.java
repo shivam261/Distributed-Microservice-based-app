@@ -4,59 +4,62 @@ import com.example.demospring.entity.DemoEntry;
 import com.example.demospring.entity.User;
 import com.example.demospring.repository.UserRepository;
 import org.bson.types.ObjectId;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Component;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
-@Component
+@Service
 public class UserService {
-    
-    @Autowired
-    private UserRepository userRepository;
-    
-    public List<User> getAll(){
+
+    private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
+
+    public UserService(UserRepository userRepository,
+                       PasswordEncoder passwordEncoder) {
+        this.userRepository = userRepository;
+        this.passwordEncoder = passwordEncoder;
+    }
+
+    public List<User> getAll() {
         return userRepository.findAll();
     }
 
-    public User saveUser(User user){
-         return userRepository.save(user);
+    // Use this only when registering a new user
+    public User createUser(User user) {
+        user.setPassword(passwordEncoder.encode(user.getPassword()));
+
+        return userRepository.save(user);
     }
 
-    public void deleteUser(ObjectId id){
+    public void deleteUser(String username) {
 
-        userRepository.deleteById(id);
-        return ;
+        userRepository.deleteByUsername(username);
     }
 
-    public Optional<User> getById(ObjectId id){
+    public Optional<User> getById(ObjectId id) {
         return userRepository.findById(id);
     }
 
     public boolean updatePassword(ObjectId id, String newPassword) {
-        Optional<User> user = userRepository.findById(id);
+        Optional<User> userOptional = userRepository.findById(id);
 
-        if (user.isPresent()) {
-            User usr = user.get();
-            usr.setPassword(newPassword); // Remember to encode this password later!
-            userRepository.save(usr);
-            return true; // Update successful
+        if (userOptional.isEmpty()) {
+            return false;
         }
 
-        return false; // User not found
+        User user = userOptional.get();
+        user.setPassword(passwordEncoder.encode(newPassword));
+        userRepository.save(user);
+
+        return true;
     }
 
-    public List<DemoEntry> listAllDemos(ObjectId id){
-        Optional<User> user = userRepository.findById(id);
-
-        return user.map(User::getDemoEntries).orElse(null);
-        /*
-        if(user.isPresent()){
-            return user.get().getDemoEntries();
-        }
-        return null;
-        */
+    public List<DemoEntry> listAllDemos(ObjectId id) {
+        return userRepository.findById(id)
+                .map(User::getDemoEntries)
+                .orElse(Collections.emptyList());
     }
-
 }
