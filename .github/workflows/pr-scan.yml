@@ -1,0 +1,60 @@
+name: PR security and quality
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-scan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install free scanners
+        run: |
+          python -m pip install --disable-pip-version-check semgrep==1.183.0
+          curl --fail --location --retry 3 \
+            https://github.com/pmd/pmd/releases/download/pmd_releases%2F7.29.0/pmd-dist-7.29.0-bin.zip \
+            --output "$RUNNER_TEMP/pmd.zip"
+          echo 'd27177c185b837fa57f097e482d1253468aa035379c5eb2671fa0a279109b179'"  $RUNNER_TEMP/pmd.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/pmd.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/pmd-bin-7.29.0/bin" >> "$GITHUB_PATH"
+      - name: Test scan automation
+        run: |
+          python -m unittest discover -s .github/scripts/tests -p 'test_*.py'
+          node --test .github/scripts/tests/publish-findings.test.cjs
+      - name: Scan changed Java code
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPORT_PATH: ${{ runner.temp }}/pr-scan/report.json
+        run: python .github/scripts/scan_pr.py
+      - name: Retain the bounded report for issue reporting
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: pr-scan-report
+          path: ${{ runner.temp }}/pr-scan/report.json
+          if-no-files-found: error
+          retention-days: 1
+
