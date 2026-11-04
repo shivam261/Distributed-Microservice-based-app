@@ -68,10 +68,9 @@ function issueBody(report, repository, runUrl) {
 }
 
 async function publish({ github, context, core, reportPath }) {
-  const run = context.payload.workflow_run;
-  if (run.event !== 'pull_request' || run.name !== 'PR security and quality' ||
-      run.path !== '.github/workflows/pr-scan.yml' ||
-      run.repository.id !== context.payload.repository.id) {
+  const source = context.payload.pull_request;
+  if (context.eventName !== 'pull_request_target' || !source ||
+      source.base.repo.id !== context.payload.repository.id || source.base.ref !== 'main') {
     throw new Error('Unexpected source workflow');
   }
   const stat = fs.lstatSync(reportPath);
@@ -80,15 +79,18 @@ async function publish({ github, context, core, reportPath }) {
   }
   const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
   validateReport(report);
+  if (source.number !== report.pr_number || source.head.sha !== report.head_sha || source.base.sha !== report.base_sha) {
+    throw new Error('Report does not match the triggering PR');
+  }
   if (report.status !== 'complete') {
     core.warning('Scan was incomplete. Existing issues will be left unchanged.');
     return;
   }
   const repo = context.repo;
   const { data: pr } = await github.rest.pulls.get({ ...repo, pull_number: report.pr_number });
-  if (pr.state !== 'open' || report.head_sha !== run.head_sha || pr.head.sha !== report.head_sha ||
+  if (pr.state !== 'open' || pr.head.sha !== report.head_sha ||
       pr.base.sha !== report.base_sha || pr.base.repo.id !== context.payload.repository.id ||
-      pr.head.repo?.id !== run.head_repository?.id) {
+      pr.head.repo?.id !== source.head.repo?.id) {
     core.info('Skipping a stale, closed, or mismatched PR report.');
     return;
   }
@@ -117,7 +119,7 @@ async function publish({ github, context, core, reportPath }) {
     return;
   }
   const body = issueBody(report, `${repo.owner}/${repo.repo}`,
-    `https://github.com/${repo.owner}/${repo.repo}/actions/runs/${run.id}`);
+    `https://github.com/${repo.owner}/${repo.repo}/actions/runs/${context.runId}`);
   const title = `[PR scan #${report.pr_number}] Security and code quality findings`;
   if (existing) {
     await github.rest.issues.update({ ...repo, issue_number: existing.number, title, body,

@@ -75,7 +75,10 @@ class DemospringApplicationTests {
         storedEntries.clear();
         seed("alice", ALICE_ID, ALICE_ENTRY);
         seed("bob", BOB_ID, BOB_ENTRY);
-        when(users.findByUsername(anyString())).thenAnswer(call ->
+        when(users.existsByUsername(anyString())).thenAnswer(call -> storedUsers.containsKey(call.getArgument(0)));
+        when(users.findById(anyString())).thenAnswer(call -> storedUsers.values().stream()
+                .filter(user -> user.getId().equals(call.getArgument(0))).findFirst().map(this::copy));
+        when(users.findCredentialsByUsername(anyString())).thenAnswer(call ->
                 Optional.ofNullable(storedUsers.get(call.getArgument(0))).map(this::copy));
         when(users.insert(any(User.class))).thenAnswer(call -> {
             User user = copy(call.getArgument(0));
@@ -211,6 +214,17 @@ class DemospringApplicationTests {
                 .andExpect(jsonPath("$.demoEntries").doesNotExist())
                 .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("bob"))));
         verify(users, never()).findAll();
+    }
+
+    @Test
+    void inFlightRequestCannotFollowAReusedUsername() throws Exception {
+        User deleted = copy(storedUsers.get("alice"));
+        seed("alice", new ObjectId().toHexString(), new ObjectId().toHexString());
+        when(users.findCredentialsByUsername("alice")).thenReturn(Optional.of(deleted));
+        mvc.perform(post("/demo").header("Authorization", alice())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"title\":\"stale request\"}"))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(entries, mongo);
     }
 
     @Test
