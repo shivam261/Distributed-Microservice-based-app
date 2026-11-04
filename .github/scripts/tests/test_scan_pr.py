@@ -12,6 +12,11 @@ scan = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(scan)
 
 
+prep_spec = importlib.util.spec_from_file_location('prepare_java', Path(__file__).parents[1] / 'prepare_java.py')
+prep = importlib.util.module_from_spec(prep_spec)
+prep_spec.loader.exec_module(prep)
+
+
 class DiffTests(unittest.TestCase):
     def test_zero_context_hunks_include_added_lines_but_not_deletions(self):
         self.assertEqual(scan.added_ranges('@@ -1,2 +1,0 @@\n-old\n@@ -5 +4,2 @@\n+a\n+b\n'), [(4, 5)])
@@ -54,6 +59,35 @@ class DiffTests(unittest.TestCase):
                 self.assertEqual(changed, {'Keep.java': [(3, 3)], 'New File.java': [(1, 1)], 'Renamed.java': [(1, 1)]})
             finally:
                 os.chdir(previous)
+
+    def test_scan_inputs_exclude_pr_scripts_rules_and_ignore_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'source'
+            source.mkdir()
+            def git(*args):
+                return prep.git(source, *args).decode().strip()
+            git('init', '-q')
+            git('config', 'user.name', 'Test')
+            git('config', 'user.email', 'test@localhost')
+            (source / 'A.java').write_text('class A {}\n')
+            git('add', '.')
+            git('commit', '-qm', 'base')
+            base = git('rev-parse', 'HEAD')
+            (source / 'A.java').write_text('class A { int change; }\n')
+            (source / '.semgrepignore').write_text('A.java\n')
+            (source / 'scan_pr.py').write_text('raise SystemExit(0)\n')
+            git('add', '.')
+            git('commit', '-qm', 'head')
+            target = Path(temporary) / 'inputs'
+            before, after = prep.prepare(source, target, base, git('rev-parse', 'HEAD'))
+            self.assertEqual(prep.git(target, 'ls-files').decode().splitlines(), ['A.java'])
+            self.assertEqual(prep.git(target, 'show', before + ':A.java'), b'class A {}\n')
+            self.assertEqual(prep.git(target, 'show', after + ':A.java'), b'class A { int change; }\n')
+            (source / 'Link.java').symlink_to('/etc/passwd')
+            git('add', 'Link.java')
+            git('commit', '-qm', 'symlink')
+            with self.assertRaisesRegex(ValueError, 'regular files'):
+                prep.prepare(source, Path(temporary) / 'unsafe', base, git('rev-parse', 'HEAD'))
 
     def test_unsafe_symlink_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

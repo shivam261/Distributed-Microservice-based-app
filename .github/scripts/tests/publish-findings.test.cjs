@@ -30,10 +30,9 @@ async function fixture(t, data = report(), overrides = {}) {
     update: async input => writes.push({ action: 'update', ...input }),
   } }, paginate: async method => method === 'files' ? [{ filename: 'src/A.java', status: 'modified',
     patch: '@@ -1,3 +1,4 @@\n class A {\n int existing;\n+ dangerous();\n }' }] : issues };
-  const context = { repo: { owner: 'owner', repo: 'repo' }, payload: { repository: { id: 1 }, workflow_run: {
-    event: 'pull_request', name: 'PR security and quality', path: '.github/workflows/pr-scan.yml',
-    repository: { id: 1 }, head_repository: { id: 2 }, head_sha: head, id: 123,
-  } } };
+  const context = { eventName: 'pull_request_target', runId: 123, repo: { owner: 'owner', repo: 'repo' },
+    payload: { repository: { id: 1 }, pull_request: { number: 7, head: { sha: head, repo: { id: 2 } },
+      base: { sha: base, repo: { id: 1 }, ref: 'main' } } } };
   const execute = () => publish({ github, context, core: { info() {}, warning() {} }, reportPath });
   return { execute, writes, context };
 }
@@ -109,7 +108,7 @@ test('a forged report count cannot close an issue', () => {
 
 test('unexpected workflow cannot publish', async t => {
   const f = await fixture(t);
-  f.context.payload.workflow_run.path = '.github/workflows/untrusted.yml';
+  f.context.eventName = 'pull_request';
   await assert.rejects(f.execute, /Unexpected source workflow/);
   assert.deepEqual(f.writes, []);
 });

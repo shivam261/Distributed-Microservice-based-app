@@ -1,7 +1,7 @@
 name: PR security and quality
 
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
 
@@ -14,14 +14,29 @@ concurrency:
 
 jobs:
   scan:
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Extract Java blobs from the PR without checking out its tree
+        id: inputs
+        env:
+          SCAN_DIR: ${{ runner.temp }}/java-inputs
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c "http.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
+          test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
+          python3 -I .github/scripts/prepare_java.py
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
@@ -44,11 +59,11 @@ jobs:
           node --test .github/scripts/tests/publish-findings.test.cjs
       - name: Scan changed Java code
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SCAN_HEAD: ${{ steps.inputs.outputs.head }}
+          SCAN_BASE: ${{ steps.inputs.outputs.base }}
           REPORT_PATH: ${{ runner.temp }}/pr-scan/report.json
-        run: python .github/scripts/scan_pr.py
+        working-directory: ${{ runner.temp }}/java-inputs
+        run: python -I "$GITHUB_WORKSPACE/.github/scripts/scan_pr.py"
       - name: Retain the bounded report for issue reporting
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -58,3 +73,41 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  publish:
+    needs: scan
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: pr-scan-report
+          path: ${{ runner.temp }}/scan-report
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          REPORT_PATH: ${{ runner.temp }}/scan-report/report.json
+        with:
+          script: |
+            const publish = require('./.github/scripts/publish_findings.cjs');
+            await publish({ github, context, core, reportPath: process.env.REPORT_PATH });
+      - name: Report the result on the PR head
+        if: ${{ !cancelled() }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PASSED: ${{ needs.scan.result == 'success' && job.status == 'success' }}
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              ...context.repo, sha: context.payload.pull_request.head.sha,
+              context: 'Trusted Java PR scan', state: process.env.PASSED === 'true' ? 'success' : 'failure',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });

@@ -34,7 +34,7 @@ public class UserService {
     public User register(RegistrationRequest request) {
         RequestValidation.requireText(request.username(), "Username");
         RequestValidation.requirePassword(request.password());
-        if (userRepository.findByUsername(request.username()).isPresent()) {
+        if (userRepository.existsByUsername(request.username())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Username already exists");
         }
         User user = new User(request.username(), passwordEncoder.encode(request.password()));
@@ -50,10 +50,10 @@ public class UserService {
     public User currentUser() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || !authentication.isAuthenticated()
-                || "anonymousUser".equals(authentication.getPrincipal())) {
+                || !(authentication.getPrincipal() instanceof AccountPrincipal principal)) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
         }
-        return userRepository.findByUsername(authentication.getName())
+        return userRepository.findById(principal.accountId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED));
     }
 
@@ -66,7 +66,7 @@ public class UserService {
     }
 
     public void deleteCurrentUser() {
-        userRepository.deleteByUsername(currentUser().getUsername());
+        userRepository.deleteById(currentUser().getId());
     }
 
     public void changePassword(PasswordChangeRequest request, String requestedId) {

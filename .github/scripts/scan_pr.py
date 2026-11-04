@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 
 
+RULESET = Path(__file__).resolve().parents[1] / "pmd-ruleset.xml"
 MAX_FINDINGS = 50
 MAX_REPORT_BYTES = 100_000
 
@@ -47,7 +48,7 @@ def changed_java(base, head):
             raise ValueError("Unsafe Java file path in PR")
         if path.stat().st_size > 1_000_000:
             raise ValueError("Changed Java file exceeds the scanner's 1 MB limit")
-        patch = git("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=0",
+        patch = git("--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=0",
                     base, head, "--", name)
         ranges = added_ranges(patch)
         if ranges:
@@ -100,7 +101,7 @@ def run_scanners(changed, baseline, output_dir):
     file_list = output_dir / "java-files.txt"
     file_list.write_text("\n".join(str(Path(name).resolve()) for name in changed) + "\n")
     pmd = subprocess.run([
-        "pmd", "check", "--file-list", str(file_list), "--rulesets", ".github/pmd-ruleset.xml",
+        "pmd", "check", "--file-list", str(file_list), "--rulesets", str(RULESET),
         "--use-version", "java-21", "--format", "json", "--report-file", str(pmd_path),
         "--no-cache", "--no-fail-on-violation",
     ], check=False, timeout=300)
@@ -123,10 +124,12 @@ def main():
     try:
         if not re.fullmatch(r"[0-9a-f]{40}", head) or not re.fullmatch(r"[0-9a-f]{40}", base):
             raise ValueError("Invalid commit SHA")
-        if git("rev-parse", "HEAD").strip() != head:
+        scan_head = os.environ.get("SCAN_HEAD", head)
+        scan_base = os.environ.get("SCAN_BASE", base)
+        if git("rev-parse", "HEAD").strip() != scan_head:
             raise ValueError("Checkout does not match the PR head")
-        baseline = git("merge-base", base, head).strip()
-        changed = changed_java(baseline, head)
+        baseline = git("merge-base", scan_base, scan_head).strip()
+        changed = changed_java(baseline, scan_head)
         report["changed_java_files"] = len(changed)
         with tempfile.TemporaryDirectory(prefix="pr-scanners-") as temporary:
             findings = run_scanners(changed, baseline, Path(temporary)) if changed else []
