@@ -1,0 +1,2 @@
+# These tests mock interfaces only; dynamic JVM instrumentation is unnecessary.
+mock-maker-proxy

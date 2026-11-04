@@ -1,53 +1,42 @@
 package com.example.demospring.controllers;
 
-import com.example.demospring.entity.User;
+import com.example.demospring.dto.PasswordChangeRequest;
+import com.example.demospring.dto.RegistrationRequest;
+import com.example.demospring.dto.UserResponse;
 import com.example.demospring.service.UserService;
-import org.bson.types.ObjectId;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.core.Authentication;
-import java.util.List;
 
 @RestController
 @RequestMapping("/user")
 public class UserController {
+    private final UserService userService;
 
-    @Autowired
-    private UserService userService;
+    public UserController(UserService userService) {
+        this.userService = userService;
+    }
 
     @GetMapping
-    public List<User> getAll(){
-        return userService.getAll();
+    public UserResponse currentUser() {
+        return UserResponse.from(userService.currentUser());
     }
 
     @PostMapping
-    public ResponseEntity<User> createUser(@RequestBody User user){
-        User u = userService.createUser(user);
-        return new  ResponseEntity<>(u, HttpStatus.CREATED);
+    public ResponseEntity<UserResponse> createUser(@RequestBody RegistrationRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(UserResponse.from(userService.register(request)));
     }
 
-    @DeleteMapping("id")
-    public ResponseEntity<?> deleteUser(){
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        assert authentication != null;
-        String username = authentication.getName();
-
-        userService.deleteUser(username);
-        return new ResponseEntity<>(HttpStatus.NO_CONTENT);
+    @DeleteMapping("/id")
+    public ResponseEntity<Void> deleteUser() {
+        userService.deleteCurrentUser();
+        return ResponseEntity.noContent().build();
     }
 
-    @PutMapping("id/{id}")
-    public ResponseEntity<?> updatePassword(@PathVariable ObjectId id, @RequestBody User usr) {
-        boolean isUpdated = userService.updatePassword(id, usr.getPassword());
-
-        if (isUpdated) {
-            return new ResponseEntity<>(HttpStatus.ACCEPTED);
-        }
-
-        return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+    @PutMapping({"/password", "/id/{id}"})
+    public ResponseEntity<Void> updatePassword(@PathVariable(required = false) String id,
+                                              @RequestBody PasswordChangeRequest request) {
+        userService.changePassword(request, id);
+        return ResponseEntity.accepted().build();
     }
-
 }
