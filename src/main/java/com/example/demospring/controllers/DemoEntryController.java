@@ -1,52 +1,41 @@
 package com.example.demospring.controllers;
 
+import com.example.demospring.dto.CreateEntryRequest;
 import com.example.demospring.entity.DemoEntry;
 import com.example.demospring.service.DemoEntryService;
-import com.example.demospring.service.UserService;
-import org.bson.types.ObjectId;
-import org.springframework.beans.factory.annotation.Autowired;
+import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.*;
-
 @RestController
 @RequestMapping("/demo")
 public class DemoEntryController {
+    private final DemoEntryService demoEntryService;
 
-
-    @Autowired
-    private DemoEntryService demoEntryService;
-
-    @Autowired
-    private UserService userService;
-
-    @GetMapping("{id}")
-    public List<DemoEntry> getAll(@PathVariable ObjectId id){
-        return demoEntryService.getAll(id);
+    public DemoEntryController(DemoEntryService demoEntryService) {
+        this.demoEntryService = demoEntryService;
     }
 
-    @PostMapping("{userid}")
-    public ResponseEntity<DemoEntry> createEntry(@RequestBody DemoEntry myEntry, @PathVariable ObjectId userid){
-
-        boolean res = demoEntryService.saveEntry(myEntry, userid);
-
-        return new ResponseEntity<DemoEntry>(HttpStatus.CREATED);
+    @GetMapping({"", "/{userid}"})
+    public List<DemoEntry> getAll(@PathVariable(required = false) String userid) {
+        return demoEntryService.getAll(userid);
     }
 
-    @GetMapping("id/{myId}")
-    public ResponseEntity<DemoEntry> getDemoEntryById(@PathVariable String myId){
-        Optional<DemoEntry> rs = demoEntryService.getById(myId);
-        return rs.map(demoEntry -> new ResponseEntity<>(demoEntry, HttpStatus.OK)).orElseGet(() -> new ResponseEntity<>(HttpStatus.NOT_FOUND));
-
-    }
-    @DeleteMapping("id/{myId}")
-    public ResponseEntity<?> deleteDemoEntry(@PathVariable String myId){// ? is wild card, we can return any object if we want
-        demoEntryService.deleteEntry(myId);
-        return new ResponseEntity<>(HttpStatus.NO_CONTENT);
+    @PostMapping({"", "/{userid}"})
+    public ResponseEntity<DemoEntry> createEntry(@RequestBody CreateEntryRequest request,
+                                                @PathVariable(required = false) String userid) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(demoEntryService.create(request, userid));
     }
 
+    @GetMapping("/id/{id}")
+    public DemoEntry getDemoEntryById(@PathVariable String id) {
+        return demoEntryService.getById(id);
+    }
 
-
+    @DeleteMapping("/id/{id}")
+    public ResponseEntity<Void> deleteDemoEntry(@PathVariable String id) {
+        demoEntryService.deleteEntry(id);
+        return ResponseEntity.noContent().build();
+    }
 }

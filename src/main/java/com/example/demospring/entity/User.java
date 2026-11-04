@@ -2,7 +2,7 @@ package com.example.demospring.entity;
 
 import lombok.Data;
 import lombok.NonNull;
-import org.bson.types.ObjectId;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.DBRef;
 import org.springframework.data.mongodb.core.mapping.Document;
@@ -22,6 +22,8 @@ public class User {
     private String username;
 
     @NonNull
+    @JsonIgnore
+    @lombok.ToString.Exclude
     private String password;
 
     @DBRef
