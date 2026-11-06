@@ -9,10 +9,9 @@ const entries = byId("entries");
 const pageSize = 10;
 
 let authorization = "";
-let editingId = null;
+let editing = null;
 let inTrash = false;
 let page = 0;
-let total = 0;
 let query = new URLSearchParams();
 
 function showMessage(text, error = false) {
@@ -63,6 +62,12 @@ function signOut() {
   resetEditor();
   filters.reset();
   query = new URLSearchParams();
+  page = 0;
+  inTrash = false;
+  renderView();
+  byId("previous").disabled = true;
+  byId("next").disabled = true;
+  byId("page-label").textContent = "";
   entries.replaceChildren();
   byId("account").textContent = "Your notes";
   workspace.hidden = true;
@@ -71,19 +76,19 @@ function signOut() {
 }
 
 function resetEditor() {
-  editingId = null;
+  editing = null;
   editor.reset();
   byId("editor-title").textContent = "New note";
   byId("cancel-edit").hidden = true;
 }
 
 function edit(note) {
-  editingId = note.id;
   byId("editor-title").textContent = "Edit note";
   byId("cancel-edit").hidden = false;
   editor.elements.title.value = note.title;
   editor.elements.content.value = note.content ?? "";
   editor.elements.tags.value = note.tags.join(", ");
+  editing = { id: note.id, fields: Object.fromEntries(new FormData(editor)) };
   editor.elements.title.focus();
 }
 
@@ -98,7 +103,7 @@ function noteButton(label, action, style = "secondary") {
 
 async function changeTrash(note, method, path, message) {
   await api(path, method);
-  if (editingId === note.id) resetEditor();
+  if (editing?.id === note.id) resetEditor();
   await loadNotes();
   showMessage(message);
 }
@@ -137,19 +142,22 @@ function renderNote(note) {
   return card;
 }
 
-async function loadNotes() {
-  const params = new URLSearchParams(inTrash ? undefined : query);
-  if (!inTrash) params.set("sort", "updated");
-  params.set("page", page);
+async function loadNotes(requestedPage = page, requestedQuery = query, showTrash = inTrash) {
+  const params = new URLSearchParams(showTrash ? undefined : requestedQuery);
+  if (!showTrash) params.set("sort", "updated");
+  params.set("page", requestedPage);
   params.set("size", pageSize);
-  const response = await api((inTrash ? "/demo/trash?" : "/demo?") + params);
-  total = Number(response.headers.get("X-Total-Count"));
+  const response = await api((showTrash ? "/demo/trash?" : "/demo?") + params);
+  const total = Number(response.headers.get("X-Total-Count"));
   const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
-  if (page > lastPage) {
-    page = lastPage;
-    return loadNotes();
+  if (requestedPage > lastPage) {
+    return loadNotes(lastPage, requestedQuery, showTrash);
   }
   const notes = await response.json();
+  page = requestedPage;
+  query = requestedQuery;
+  inTrash = showTrash;
+  renderView();
   entries.replaceChildren(...notes.map(renderNote));
   if (!notes.length) entries.textContent = inTrash ? "Trash is empty." : "No notes found.";
   byId("previous").disabled = page === 0;
@@ -157,9 +165,7 @@ async function loadNotes() {
   byId("page-label").textContent = "Page " + (page + 1) + " of " + (lastPage + 1);
 }
 
-async function switchView(showTrash) {
-  inTrash = showTrash;
-  page = 0;
+function renderView() {
   byId("show-notes").setAttribute("aria-pressed", String(!inTrash));
   byId("show-trash").setAttribute("aria-pressed", String(inTrash));
   byId("show-notes").classList.toggle("secondary", inTrash);
@@ -167,8 +173,6 @@ async function switchView(showTrash) {
   byId("list-title").textContent = inTrash ? "Trash" : "Notes";
   editor.hidden = inTrash;
   filters.hidden = inTrash;
-  entries.replaceChildren();
-  await loadNotes();
 }
 
 auth.addEventListener("submit", event => {
@@ -186,44 +190,42 @@ auth.addEventListener("submit", event => {
     auth.hidden = true;
     workspace.hidden = false;
     byId("account").textContent = "Signed in as " + account.username;
-    await switchView(false);
+    await loadNotes(0);
   });
 });
 
 editor.addEventListener("submit", event => {
   event.preventDefault();
-  const { title, content, tags } = Object.fromEntries(new FormData(editor));
-  const body = { title, content, tags: tags.split(",").map(tag => tag.trim()).filter(Boolean) };
+  const fields = Object.fromEntries(new FormData(editor));
+  const body = editing ? Object.fromEntries(Object.entries(fields)
+    .filter(([key, value]) => value !== editing.fields[key])) : fields;
+  if (Object.keys(body).length === 0) {
+    showMessage("No changes to save.");
+    return;
+  }
+  if (body.tags !== undefined) body.tags = body.tags.split(",").map(tag => tag.trim()).filter(Boolean);
   run(async () => {
-    const path = editingId ? "/demo/id/" + encodeURIComponent(editingId) : "/demo";
-    await api(path, editingId ? "PATCH" : "POST", body);
+    const path = editing ? "/demo/id/" + encodeURIComponent(editing.id) : "/demo";
+    await api(path, editing ? "PATCH" : "POST", body);
     resetEditor();
-    page = 0;
-    await loadNotes();
+    await loadNotes(0);
     showMessage("Note saved.");
   });
 });
 
 filters.addEventListener("submit", event => {
   event.preventDefault();
-  query = new URLSearchParams(new FormData(filters));
-  page = 0;
-  run(loadNotes);
+  const requestedQuery = new URLSearchParams(new FormData(filters));
+  run(() => loadNotes(0, requestedQuery));
 });
 
-byId("show-notes").addEventListener("click", () => run(() => switchView(false)));
-byId("show-trash").addEventListener("click", () => run(() => switchView(true)));
+byId("show-notes").addEventListener("click", () => run(() => loadNotes(0, query, false)));
+byId("show-trash").addEventListener("click", () => run(() => loadNotes(0, query, true)));
 byId("signout").addEventListener("click", () => {
   signOut();
   showMessage("Signed out.");
   auth.elements.username.focus();
 });
 byId("cancel-edit").addEventListener("click", resetEditor);
-byId("previous").addEventListener("click", () => {
-  page -= 1;
-  run(loadNotes);
-});
-byId("next").addEventListener("click", () => {
-  page += 1;
-  run(loadNotes);
-});
+byId("previous").addEventListener("click", () => run(() => loadNotes(page - 1)));
+byId("next").addEventListener("click", () => run(() => loadNotes(page + 1)));
