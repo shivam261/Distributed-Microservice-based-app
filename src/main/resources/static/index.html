@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>DemoSpring Notes</title>
+  <link rel="stylesheet" href="/notes.css">
+  <script src="/notes.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">DEMOSPRING</p>
+      <h1>Private notes</h1>
+    </header>
+
+    <form id="auth">
+      <fieldset id="auth-controls">
+        <legend>Your account</legend>
+        <label>Username <input name="username" autocomplete="username" required pattern="[^:]+"></label>
+        <label>Password <input name="password" type="password" required></label>
+        <div class="actions">
+          <button value="signin">Sign in</button>
+          <button value="register" class="secondary">Create account</button>
+        </div>
+      </fieldset>
+    </form>
+    <p id="message" role="status" aria-live="polite"></p>
+
+    <section id="workspace" aria-label="Notes workspace" hidden>
+      <fieldset id="workspace-controls">
+        <legend id="account">Your notes</legend>
+        <div class="actions">
+          <button id="show-notes" aria-pressed="true">Notes</button>
+          <button id="show-trash" aria-pressed="false" class="secondary">Trash</button>
+          <button id="signout" class="secondary">Sign out</button>
+        </div>
+        <form id="editor">
+          <h2 id="editor-title">New note</h2>
+          <label>Title <input name="title" required></label>
+          <label>Content <textarea name="content" rows="5"></textarea></label>
+          <label>Tags <input name="tags" placeholder="personal, ideas"></label>
+          <div class="actions">
+            <button>Save note</button>
+            <button id="cancel-edit" type="button" class="secondary" hidden>Cancel edit</button>
+          </div>
+        </form>
+        <form id="filters" class="filters">
+          <label>Search notes <input name="q" type="search" placeholder="Title or content"></label>
+          <label>Filter by tag <input name="tag" type="search" placeholder="Exact tag"></label>
+          <button>Apply filters</button>
+        </form>
+        <section aria-labelledby="list-title">
+          <h2 id="list-title">Notes</h2>
+          <div id="entries"></div>
+          <nav aria-label="Pages" class="actions">
+            <button id="previous" class="secondary" disabled>Previous</button>
+            <span id="page-label"></span>
+            <button id="next" class="secondary" disabled>Next</button>
+          </nav>
+        </section>
+      </fieldset>
+    </section>
+  </main>
+</body>
+</html>
