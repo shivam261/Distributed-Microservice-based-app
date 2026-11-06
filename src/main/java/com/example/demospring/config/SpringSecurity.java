@@ -47,6 +47,7 @@ public class SpringSecurity {
                 .authenticationProvider(authenticationProvider())
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/health-check").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/", "/index.html", "/notes.js", "/notes.css").permitAll()
                         .requestMatchers(HttpMethod.POST,"/user").permitAll()
                         .anyRequest().authenticated()
                 )

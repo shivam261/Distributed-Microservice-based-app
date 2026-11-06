@@ -2,11 +2,14 @@ package com.example.demospring.service;
 
 import com.example.demospring.dto.PasswordChangeRequest;
 import com.example.demospring.dto.RegistrationRequest;
+import com.example.demospring.entity.DemoEntry;
 import com.example.demospring.entity.User;
+import com.example.demospring.repository.DemoEntryRepository;
 import com.example.demospring.repository.UserRepository;
 import java.util.List;
 import java.util.Objects;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.mongodb.core.FindAndModifyOptions;
 import org.springframework.data.mongodb.core.MongoOperations;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
@@ -21,12 +24,14 @@ import static org.springframework.data.mongodb.core.query.Criteria.where;
 @Service
 public class UserService {
     private final UserRepository userRepository;
+    private final DemoEntryRepository entryRepository;
     private final PasswordEncoder passwordEncoder;
     private final MongoOperations mongoOperations;
 
-    public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder,
-                       MongoOperations mongoOperations) {
+    public UserService(UserRepository userRepository, DemoEntryRepository entryRepository,
+                       PasswordEncoder passwordEncoder, MongoOperations mongoOperations) {
         this.userRepository = userRepository;
+        this.entryRepository = entryRepository;
         this.passwordEncoder = passwordEncoder;
         this.mongoOperations = mongoOperations;
     }
@@ -48,13 +53,17 @@ public class UserService {
     }
 
     public User currentUser() {
+        return userRepository.findById(authenticatedAccountId()).filter(user -> !user.isDeleting())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED));
+    }
+
+    private String authenticatedAccountId() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || !authentication.isAuthenticated()
                 || !(authentication.getPrincipal() instanceof AccountPrincipal principal)) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
         }
-        return userRepository.findById(principal.accountId())
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED));
+        return principal.accountId();
     }
 
     public User currentUser(String requestedId) {
@@ -66,7 +75,24 @@ public class UserService {
     }
 
     public void deleteCurrentUser() {
-        userRepository.deleteById(currentUser().getId());
+        String id = authenticatedAccountId();
+        // Mark first so a create cannot attach another entry after this snapshot.
+        User user = mongoOperations.findAndModify(Query.query(where("id").is(id)),
+                new Update().set("deleting", true), FindAndModifyOptions.options().returnNew(true), User.class);
+        if (user == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+        }
+        List<String> entryIds = user.getDemoEntries().stream().filter(Objects::nonNull)
+                .map(DemoEntry::getId).toList();
+        // Keep the marked account and its references until cleanup succeeds, so deletion can be retried.
+        if (!entryIds.isEmpty()) {
+            entryRepository.deleteAllById(entryIds);
+        }
+        userRepository.deleteById(id);
+    }
+
+    static Query activeAccount(String id) {
+        return Query.query(where("id").is(id).and("deleting").ne(true));
     }
 
     public void changePassword(PasswordChangeRequest request, String requestedId) {
@@ -78,7 +104,7 @@ public class UserService {
         }
         // Compare-and-set avoids overwriting a concurrent password change.
         var result = mongoOperations.updateFirst(
-                Query.query(where("id").is(user.getId()).and("password").is(user.getPassword())),
+                activeAccount(user.getId()).addCriteria(where("password").is(user.getPassword())),
                 new Update().set("password", passwordEncoder.encode(request.newPassword())), User.class);
         if (result.getMatchedCount() == 0) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Account changed; please retry");

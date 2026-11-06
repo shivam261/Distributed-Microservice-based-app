@@ -13,8 +13,10 @@ import com.example.demospring.repository.UserRepository;
 import com.example.demospring.service.DemoEntryService;
 import com.example.demospring.service.UserDetailServiceImpl;
 import com.example.demospring.service.UserService;
+import com.mongodb.client.result.DeleteResult;
 import com.mongodb.client.result.UpdateResult;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -31,6 +33,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.mongodb.core.FindAndModifyOptions;
 import org.springframework.data.mongodb.core.MongoOperations;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
@@ -101,10 +104,50 @@ class DemospringApplicationTests {
             storedEntries.remove(call.getArgument(0));
             return null;
         }).when(entries).deleteById(anyString());
+        doAnswer(call -> {
+            Iterable<String> ids = call.getArgument(0);
+            ids.forEach(storedEntries::remove);
+            return null;
+        }).when(entries).deleteAllById(any());
+        doAnswer(call -> {
+            storedUsers.values().removeIf(user -> user.getId().equals(call.getArgument(0)));
+            return null;
+        }).when(users).deleteById(anyString());
+        when(mongo.findAndModify(any(Query.class), any(Update.class), any(FindAndModifyOptions.class), eq(User.class)))
+                .thenAnswer(call -> {
+                    Query query = call.getArgument(0);
+                    User user = storedUsers.values().stream()
+                            .filter(account -> account.getId().equals(query.getQueryObject().getString("id")))
+                            .findFirst().orElse(null);
+                    if (user == null) {
+                        return null;
+                    }
+                    user.setDeleting(true);
+                    return copy(user);
+                });
+        when(mongo.findAndModify(any(Query.class), any(Update.class), any(FindAndModifyOptions.class),
+                eq(DemoEntry.class))).thenAnswer(call -> {
+                    DemoEntry entry = matchingEntry(call.getArgument(0));
+                    if (entry == null) {
+                        return null;
+                    }
+                    Update changes = call.getArgument(1);
+                    applyEntryUpdate(entry, changes.getUpdateObject());
+                    return copyEntry(entry);
+                });
+        when(mongo.remove(any(Query.class), eq(DemoEntry.class))).thenAnswer(call -> {
+            DemoEntry entry = matchingEntry(call.getArgument(0));
+            if (entry == null) {
+                return DeleteResult.acknowledged(0);
+            }
+            storedEntries.remove(entry.getId());
+            return DeleteResult.acknowledged(1);
+        });
         when(mongo.updateFirst(any(Query.class), any(Update.class), eq(User.class))).thenAnswer(call -> {
             Document query = ((Query) call.getArgument(0)).getQueryObject();
             User target = storedUsers.values().stream()
                     .filter(user -> user.getId().equals(query.getString("id")))
+                    .filter(user -> !query.containsKey("deleting") || !user.isDeleting())
                     .filter(user -> !query.containsKey("password")
                             || user.getPassword().equals(query.getString("password")))
                     .findFirst().orElse(null);
@@ -125,6 +168,36 @@ class DemospringApplicationTests {
             }
             return UpdateResult.acknowledged(1, 1L, null);
         });
+    }
+
+    private DemoEntry matchingEntry(Query query) {
+        Document filter = query.getQueryObject();
+        DemoEntry entry = storedEntries.get(filter.getString("id"));
+        boolean trashed = filter.get("deletedAt") instanceof Document;
+        return entry != null && (entry.getDeletedAt() != null) == trashed ? entry : null;
+    }
+
+    private void applyEntryUpdate(DemoEntry entry, Document update) {
+        Document fields = update.get("$set", new Document());
+        if (fields.containsKey("title")) {
+            entry.setTitle(fields.getString("title"));
+        }
+        if (fields.containsKey("content")) {
+            entry.setContent(fields.getString("content"));
+        }
+        if (fields.containsKey("tags")) {
+            entry.setTags(fields.getList("tags", String.class));
+        }
+        Document dates = update.get("$currentDate", new Document());
+        if (dates.containsKey("updatedAt")) {
+            entry.setUpdatedAt(Instant.now());
+        }
+        if (dates.containsKey("deletedAt")) {
+            entry.setDeletedAt(Instant.now());
+        }
+        if (update.containsKey("$unset")) {
+            entry.setDeletedAt(null);
+        }
     }
 
     @Test
@@ -199,6 +272,8 @@ class DemospringApplicationTests {
         mvc.perform(post("/demo").contentType(MediaType.APPLICATION_JSON).content("{\"title\":\"x\"}"))
                 .andExpect(status().isUnauthorized());
         mvc.perform(delete("/demo/id/" + BOB_ENTRY)).andExpect(status().isUnauthorized());
+        mvc.perform(get("/demo/trash")).andExpect(status().isUnauthorized());
+        mvc.perform(patch("/demo/trash/" + BOB_ENTRY)).andExpect(status().isUnauthorized());
         mvc.perform(put("/user/password").contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isUnauthorized());
         mvc.perform(delete("/user/id")).andExpect(status().isUnauthorized());
@@ -330,7 +405,94 @@ class DemospringApplicationTests {
         mvc.perform(get("/demo/id/" + ALICE_ENTRY).header("Authorization", alice()))
                 .andExpect(status().isNotFound());
         mvc.perform(get("/demo").header("Authorization", alice())).andExpect(jsonPath("$.length()").value(0));
-        assertThat(storedEntries).doesNotContainKey(ALICE_ENTRY).containsKey(BOB_ENTRY);
+        assertThat(storedEntries.get(ALICE_ENTRY).getDeletedAt()).isNotNull();
+        assertThat(storedEntries).containsKey(BOB_ENTRY);
+    }
+
+    @Test
+    void entryEditsArePartialAndRejectUnknownFields() throws Exception {
+        String path = "/demo/id/" + ALICE_ENTRY;
+        mvc.perform(patch(path).header("Authorization", alice()).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"Updated title","tags":[" Work ","work","ideas"]}
+                                """))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.title").value("Updated title"))
+                .andExpect(jsonPath("$.content").value("alice private content"))
+                .andExpect(jsonPath("$.tags[0]").value("work"))
+                .andExpect(jsonPath("$.tags.length()").value(2))
+                .andExpect(jsonPath("$.updatedAt").isNotEmpty());
+        for (String body : List.of("{}", "{\"title\":\" \"}", "{\"tags\":[null]}", "{\"deletedAt\":null}")) {
+            mvc.perform(patch(path).header("Authorization", alice()).contentType(MediaType.APPLICATION_JSON)
+                            .content(body)).andExpect(status().isBadRequest());
+        }
+        mvc.perform(patch("/demo/id/" + BOB_ENTRY).header("Authorization", alice())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"title\":\"forged\"}"))
+                .andExpect(status().isNotFound());
+        assertThat(storedEntries.get(BOB_ENTRY).getTitle()).isEqualTo("bob title");
+    }
+
+    @Test
+    void entriesCanBeSearchedTaggedSortedAndPaged() throws Exception {
+        mvc.perform(post("/demo").header("Authorization", alice()).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"Newer","content":"PRIVATE plan","tags":[" Work "]}
+                                """))
+                .andExpect(status().isCreated());
+        mvc.perform(get("/demo").header("Authorization", alice())
+                        .param("q", "PRIVATE").param("sort", "updated").param("page", "0").param("size", "1"))
+                .andExpect(status().isOk()).andExpect(header().string("X-Total-Count", "2"))
+                .andExpect(jsonPath("$.length()").value(1)).andExpect(jsonPath("$[0].title").value("Newer"));
+        mvc.perform(get("/demo").header("Authorization", alice())
+                        .param("q", "title").param("sort", "updated").param("page", "0"))
+                .andExpect(header().string("X-Total-Count", "1")).andExpect(jsonPath("$[0].id").value(ALICE_ENTRY));
+        mvc.perform(get("/demo").header("Authorization", alice())
+                        .param("q", "private").param("tag", "WORK").param("page", "1").param("size", "1"))
+                .andExpect(header().string("X-Total-Count", "1")).andExpect(jsonPath("$.length()").value(0));
+        mvc.perform(get("/demo").header("Authorization", alice()).param("size", "101"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void trashRestorationAndPermanentDeletionAreScopedToOwner() throws Exception {
+        String active = "/demo/id/" + ALICE_ENTRY;
+        String trash = "/demo/trash/" + ALICE_ENTRY;
+        String bob = basic("bob", PASSWORD);
+        mvc.perform(delete(trash).header("Authorization", alice())).andExpect(status().isNotFound());
+        mvc.perform(delete(active).header("Authorization", alice())).andExpect(status().isNoContent());
+        mvc.perform(get("/demo/trash").header("Authorization", bob)).andExpect(jsonPath("$.length()").value(0));
+        mvc.perform(get("/demo/trash").header("Authorization", alice()))
+                .andExpect(jsonPath("$[0].id").value(ALICE_ENTRY));
+        mvc.perform(patch(trash).header("Authorization", bob)).andExpect(status().isNotFound());
+        mvc.perform(delete(trash).header("Authorization", bob)).andExpect(status().isNotFound());
+        mvc.perform(patch(trash).header("Authorization", alice())).andExpect(status().isOk());
+        mvc.perform(get(active).header("Authorization", alice())).andExpect(status().isOk());
+        mvc.perform(delete(active).header("Authorization", alice())).andExpect(status().isNoContent());
+        mvc.perform(delete(trash).header("Authorization", alice())).andExpect(status().isNoContent());
+        assertThat(storedEntries).containsOnlyKeys(BOB_ENTRY);
+        assertThat(storedUsers.get("alice").getDemoEntries()).isEmpty();
+    }
+
+    @Test
+    void accountDeletionCanResumeAfterPartialCleanup() throws Exception {
+        mvc.perform(post("/demo").header("Authorization", alice()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"remaining entry\"}")).andExpect(status().isCreated());
+        mvc.perform(delete("/demo/id/" + ALICE_ENTRY).header("Authorization", alice()))
+                .andExpect(status().isNoContent());
+        doAnswer(call -> {
+            storedEntries.remove(ALICE_ENTRY);
+            throw new IllegalStateException("interrupted cleanup");
+        }).doAnswer(call -> {
+            Iterable<String> ids = call.getArgument(0);
+            ids.forEach(storedEntries::remove);
+            return null;
+        }).when(entries).deleteAllById(any());
+
+        assertThatThrownBy(() -> mvc.perform(delete("/user/id").header("Authorization", alice())))
+                .hasRootCauseMessage("interrupted cleanup");
+        mvc.perform(get("/demo").header("Authorization", alice())).andExpect(status().isUnauthorized());
+        mvc.perform(delete("/user/id").header("Authorization", alice())).andExpect(status().isNoContent());
+        assertThat(storedUsers).containsOnlyKeys("bob");
+        assertThat(storedEntries).containsOnlyKeys(BOB_ENTRY);
     }
 
     @Test
@@ -348,9 +510,9 @@ class DemospringApplicationTests {
 
     @Test
     void serviceLayerAlsoRejectsUnauthenticatedCalls() {
-        assertThatThrownBy(() -> entryService.getAll(null)).isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> entryService.getAll(null, null, null, null)).isInstanceOf(ResponseStatusException.class);
         assertThatThrownBy(() -> entryService.getById(BOB_ENTRY)).isInstanceOf(ResponseStatusException.class);
-        assertThatThrownBy(() -> entryService.create(new CreateEntryRequest("x", "y"), BOB_ID))
+        assertThatThrownBy(() -> entryService.create(new CreateEntryRequest("x", "y", null), BOB_ID))
                 .isInstanceOf(ResponseStatusException.class);
         assertThatThrownBy(() -> entryService.deleteEntry(BOB_ENTRY)).isInstanceOf(ResponseStatusException.class);
         assertThatThrownBy(() -> userService.changePassword(new PasswordChangeRequest(PASSWORD, "x"), BOB_ID))
@@ -387,7 +549,10 @@ class DemospringApplicationTests {
         User target = new User(source.getUsername(), source.getPassword());
         target.setId(source.getId());
         target.setRoles(new ArrayList<>(source.getRoles()));
-        target.setDemoEntries(new ArrayList<>(source.getDemoEntries().stream().map(this::copyEntry).toList()));
+        target.setDeleting(source.isDeleting());
+        target.setDemoEntries(new ArrayList<>(source.getDemoEntries().stream()
+                .map(entry -> storedEntries.get(entry.getId())).filter(java.util.Objects::nonNull)
+                .map(this::copyEntry).toList()));
         return target;
     }
 
@@ -396,6 +561,9 @@ class DemospringApplicationTests {
         target.setId(source.getId());
         target.setTitle(source.getTitle());
         target.setContent(source.getContent());
+        target.setTags(source.getTags());
+        target.setUpdatedAt(source.getUpdatedAt());
+        target.setDeletedAt(source.getDeletedAt());
         return target;
     }
 }

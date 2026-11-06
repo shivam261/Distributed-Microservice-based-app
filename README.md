@@ -1,31 +1,80 @@
-# Demo Spring API
+# DemoSpring Notes
 
 Requires Java 21 and MongoDB. Set `MONGODB_URI` in the environment or an ignored
 `.env` file, then run `./mvnw spring-boot:run`. MongoDB must allow creation of the
 unique username and entry ownership indexes. Automatic index creation is enabled.
 
-Except for `GET /health-check` and registration, requests require HTTP Basic
-authentication. Send credentials with each request; authentication is stateless.
+Open `http://localhost:8080/` to register or sign in, create and edit notes, search
+by title or content, filter by tag, and manage trash. The app keeps credentials in
+page memory. Reloading or signing out clears them from the app. Use HTTPS when
+serving the app outside localhost because it sends HTTP Basic credentials with
+authenticated requests.
+
+## API
+
+The browser page, its assets, `GET /health-check`, and registration are public.
+Other routes require HTTP Basic credentials on each request.
 
 | Method and path | Behavior |
 | --- | --- |
 | `POST /user` | Register with `{"username":"alice","password":"secret"}`. Returns only `id`, `username`, and server-assigned `roles`. Duplicate usernames return 409. |
 | `GET /user` | Return the authenticated user's profile, containing only `id`, `username`, and `roles`. |
 | `PUT /user/password` | Change the caller's password with `{"currentPassword":"secret","newPassword":"replacement"}`. An incorrect current password returns 403. |
-| `DELETE /user/id` | Delete the authenticated user's account. |
-| `GET /demo` | List the caller's entries. |
-| `POST /demo` | Create an entry with `{"title":"Example","content":"Private content"}`. Returns the created entry with a server-generated ID. |
-| `GET /demo/id/{entryId}` | Read an owned entry. Missing or unowned entries return 404. |
-| `DELETE /demo/id/{entryId}` | Delete an owned entry and remove its account reference. Missing or unowned entries return 404. |
+| `DELETE /user/id` | Permanently delete the caller's active and trashed entries, then delete the account. Returns 204. |
+| `GET /demo` | List the caller's active entries. Supports search, tag filtering, sorting, and pagination. |
+| `POST /demo` | Create an entry with `{"title":"Example","content":"Private content","tags":["work"]}`. Only `title` is required. Returns 201 with the new entry. |
+| `GET /demo/id/{entryId}` | Read an owned active entry. |
+| `PATCH /demo/id/{entryId}` | Update the title, content, or tags of an owned active entry. Returns the updated entry. |
+| `DELETE /demo/id/{entryId}` | Move an owned active entry to trash. Returns 204. |
+| `GET /demo/trash` | List the caller's trashed entries, newest deletion first. Supports pagination. |
+| `PATCH /demo/trash/{entryId}` | Restore an owned trashed entry. Returns the restored entry. |
+| `DELETE /demo/trash/{entryId}` | Permanently delete an owned trashed entry. Returns 204. |
 
-Registration and entry creation reject unknown fields, including persistence IDs,
-roles, and entry references, with 400. Usernames and entry titles must be nonblank;
-passwords must be nonblank and at most 72 UTF-8 bytes (the BCrypt limit).
+Entry operations return 404 when the entry is missing, belongs to another account,
+or is in the wrong state for the requested operation. Entry responses include
+`tags`, `updatedAt`, and `deletedAt`. Entries created before this change start
+with an empty tag list and a missing update timestamp until their next edit or
+restore. The API records `updatedAt` on create, edit, and restore, and `deletedAt`
+when a note enters trash.
+
+For a partial update, send at least one non-null field. Omitted and null fields
+retain their current values. Use `{"content":""}` to clear content or
+`{"tags":[]}` to clear tags. Requests can supply up to 20 nonblank tags of up to
+40 characters each. The server trims, lowercases, and deduplicates tags.
+
+### Listing entries
+
+- `q` matches a case-insensitive substring of the title or content.
+- `tag` matches one exact tag, ignoring case and surrounding whitespace.
+- `sort=updated` returns the most recently updated notes first, followed by
+  legacy notes without a timestamp. Equal timestamps are ordered by entry ID.
+- `page` and `size` work for active and trash lists. Supplying either enables
+  pagination, with a default page of `0` and default size of `20`. Sizes range
+  from `1` through `100`. Paginated responses include `X-Total-Count` with the
+  number of matching entries before pagination. Both modes return a JSON array.
+
+For example, `GET /demo?q=planning&tag=work&sort=updated&page=0&size=10`
+returns the first ten matching notes. A plain `GET /demo` returns all active
+entries in their existing reference order. The API currently filters and pages
+the caller's resolved MongoDB references in memory.
+
+### Compatibility and account cleanup
+
+Registration, entry creation, and entry editing reject unknown fields, including
+persistence IDs, roles, and entry references, with 400. Usernames and entry titles
+must be nonblank. Passwords must be nonblank and at most 72 UTF-8 bytes (the BCrypt limit).
 
 The existing `PUT /user/id/{userId}` and `GET`/`POST /demo/{userId}` routes remain
 available only when the path ID belongs to the authenticated caller. Password
 changes through either route require both `currentPassword` and `newPassword`.
 `GET /user` now returns one profile instead of a list of all accounts.
+
+Account deletion marks the account as deleting before removing entries, which
+blocks new entry references. If cleanup fails, repeat `DELETE /user/id` with the
+same credentials to finish it. The username stays reserved and other authenticated
+operations are blocked until cleanup completes. The deletion only covers entries
+referenced by that account. Orphan documents left by older versions require a
+separate review.
 
 A unique partial index prevents two accounts from referencing the same MongoDB entry.
 Empty entry lists are excluded from the index. If index creation fails with duplicate
@@ -51,9 +100,8 @@ With Java 21 selected, run `./mvnw verify` (or `mvn verify`). The regression sui
 exercises the real HTTP Basic security chain, controllers, and services using
 detached in-memory repository fixtures; no live MongoDB connection is required.
 It covers two-user isolation, registration injection and duplicates, password
-verification, credential preservation after entry creation, and MongoDB query and
-DBRef update mapping. It does not replace integration testing against a running
-MongoDB server.
+verification, credential preservation after entry creation, MongoDB query and
+DBRef update mapping, and the edit, search, trash, and deletion workflows.
 
 ## Automatic PR security and quality checks
 

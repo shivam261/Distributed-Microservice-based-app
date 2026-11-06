@@ -32,5 +32,7 @@ public class User {
     @DBRef
     private List<DemoEntry> demoEntries = new ArrayList<>();
     private List<String> roles = new ArrayList<>();
+    @JsonIgnore
+    private boolean deleting;
 
 }
